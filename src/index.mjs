@@ -2,17 +2,29 @@ import { downloadFromHub } from './controllers/downloadFiles.mjs';
 import { buildDataStructure } from './utils/hgDataStructure.mjs';
 import { fetchPageAndExtractURLs } from './utils/extractUrlsFromPage.mjs';
 import { log } from './utils/logger.mjs';
-import fastify from 'fastify';
 import promiseLimitter from "./utils/concurrency-limit/promise-limitter.mjs"
-import { config as dotenvConfig } from 'dotenv';
 import { buildMLCLocalConfig } from './controllers/buildMLCLocalConfig.mjs';
 
-dotenvConfig();
-const server = fastify();
 const downloadConcurrency = parseInt(process.env.MODEL_DOWNLOAD_CONCURRENCY) || 4;
 const limit = promiseLimitter(downloadConcurrency);
 
-server.get('/', async (request, reply) => {
+const server = Bun.serve({
+  port: process.env.HOST_PORT || 8000,
+  fetch(req) {
+    const url = new URL(req.url);
+    if (url.pathname === "/") {
+      return handleRootRequest();
+    }
+    if (url.pathname === "/model-config") {
+      return handleModelConfigRequest();
+    }
+    return new Response('Not found', { status: 404 });
+  },
+});
+
+console.log(`Server listening on localhost:${server.port}`);
+
+async function handleRootRequest() {
   try {
     const huggingFaceURLs = await fetchPageAndExtractURLs();
     const dataStructure = buildDataStructure(huggingFaceURLs);
@@ -25,8 +37,8 @@ server.get('/', async (request, reply) => {
           .then(() => {
             log('success', `Finished downloading files of ${model.url}`);
           })
-          .catch(() => {
-            log('error', `Error downloading files of ${model.url}`);
+          .catch((e) => {
+            log('error', e,`Error downloading files of ${model.url}`);
           });
       });
     });
@@ -36,29 +48,19 @@ server.get('/', async (request, reply) => {
 
     if (failedDownloads.length > 0) {
       log('error', `${failedDownloads.length} model(s) failed to download.`);
-      reply.send(`${failedDownloads.length} model(s) failed to download.`);
+      return new Response(`${failedDownloads.length} model(s) failed to download.`);
     } else {
       log('success', 'Weights downloaded successfully');
-      reply.send('Weights downloaded successfully');
+      return new Response('Weights downloaded successfully');
     }
   } catch (error) {
     log('error', 'An error occurred');
-    reply.send('An error occurred');
+    return new Response('An error occurred');
   }
-});
+}
 
-server.get('/model-config', async (request, reply) => {
+async function handleModelConfigRequest() {
   const huggingFaceURLs = await fetchPageAndExtractURLs();
   const config = buildMLCLocalConfig(huggingFaceURLs);
-  reply.send(config);
-});
-
-server.listen({ port: process.env.HOST_PORT || 8000 }, (err, address) => {
-  if (err) {
-    console.error(err);
-    process.exit(1);
-  }
-
-  console.log(`Server listening at ${address}`);
-});
-
+  return new Response(JSON.stringify(config));
+}
